@@ -651,7 +651,7 @@ Backends are installed into your data volume rather than baked into the image, s
 want is a run-time setting:
 
 ```bash
-docker run -e HR_BACKENDS=claude,codex,hermes,pi,dsh,opencode,qwen,gemini,cline,omp,goose,kimi,aider,openhands,systemone ...  # the default
+docker run -e HR_BACKENDS=claude,codex,hermes,pi,dsh,opencode,qwen,gemini,cline,omp,goose,kimi,aider,openhands,systemone,unreal ...  # the default
 docker run -e HR_BACKENDS=opencode ...                             # lean
 ```
 

@@ -38,6 +38,7 @@ run, by you, under their own licenses:
 
   @anthropic-ai/claude-code   Anthropic's own terms ("SEE LICENSE IN README.md")
   @openai/codex               Apache-2.0
+  unreal-agent-runner         MIT (unreallabsai/unreal-agent)
   hermes-agent                no license declared by the publisher
 
 Because Claude Code is distributed under Anthropic's terms and hermes-agent declares no

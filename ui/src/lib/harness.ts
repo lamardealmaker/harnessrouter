@@ -20,7 +20,7 @@ export interface OobHarness {
   defaultModel?: string;   // the backend default, NOT necessarily models[0]
   moreModels?: number;     // "+N" pill
   status: 'ready' | 'soon';
-  backend: 'claude' | 'codex' | 'hermes' | 'pi' | 'dsh' | 'opencode' | 'qwen' | 'gemini' | 'cline' | 'omp' | 'goose' | 'kimi' | 'aider' | 'openhands' | 'systemone' | null; // gateway backend; null = coming soon
+  backend: 'claude' | 'codex' | 'hermes' | 'pi' | 'dsh' | 'opencode' | 'qwen' | 'gemini' | 'cline' | 'omp' | 'goose' | 'kimi' | 'aider' | 'openhands' | 'systemone' | 'unreal' | null; // gateway backend; null = coming soon
   systemPrompt: string;    // the harness's built-in system prompt (shown read-only)
   tools: string[];         // built-in tools (read-only)
   skills: string[];        // built-in skills (read-only)
@@ -71,6 +71,10 @@ export type HarnessPlugin = {
 };
 
 export const OOB: OobHarness[] = [
+  { id: 'unreal', name: 'Unreal Agent', version: 'v0.1.1', backend: 'unreal', status: 'ready',
+    models: ['gpt-5.4'], defaultModel: 'gpt-5.4',
+    systemPrompt: 'You are Unreal Agent, an asynchronous coding agent. Work in the task workspace, use skills when relevant, and save deliverables there.',
+    tools: [], skills: [] },
   { id: 'codex', name: 'Codex', version: 'v1.0.1', backend: 'codex', status: 'ready',
     models: ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2'], defaultModel: 'gpt-5.5', moreModels: 0,
     systemPrompt: 'You are Codex, an autonomous software-engineering agent. You operate on a real git workspace with shell access, reading and editing files and running commands to complete the task, returning reviewable diffs and results.',
@@ -276,6 +280,7 @@ export interface BaseInfo {
    *  offered actions and reads no documents), so none are offered and none can be added. Absent
    *  on older gateways, which is the same as true. */
   takesSkills?: boolean;
+  takesMcp?: boolean;
 }
 
 let _bases: Record<string, BaseInfo> | null = null;

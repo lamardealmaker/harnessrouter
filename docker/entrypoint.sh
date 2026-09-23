@@ -179,7 +179,7 @@ export HOSTNAME=0.0.0.0
 TOOLS="$DATA_DIR/agent-tools"
 export PATH="$TOOLS/bin:$PATH"
 export NODE_PATH="$TOOLS/lib/node_modules"
-export HR_BACKENDS="${HR_BACKENDS:-claude,codex,hermes,pi,dsh,opencode,qwen,gemini,cline,omp,goose,kimi,aider,openhands,systemone}"
+export HR_BACKENDS="${HR_BACKENDS:-claude,codex,hermes,pi,dsh,opencode,qwen,gemini,cline,omp,goose,kimi,aider,openhands,systemone,unreal}"
 
 wanted()   { [[ ",$HR_BACKENDS," == *",$1,"* ]]; }
 # The executable IS the definition of "installed" — an installer that exits 0 without producing
@@ -202,6 +202,7 @@ backend_bin() {
     aider)  echo "$TOOLS/aider-venv/bin/aider" ;;
     openhands) echo "$TOOLS/openhands-venv/bin/python" ;;
     systemone) echo "$TOOLS/systemone-venv/bin/python" ;;
+    unreal) echo "$TOOLS/bin/unreal-agent-runner" ;;
   esac
 }
 
@@ -500,6 +501,9 @@ install_goose() {
   rm -rf "$gs_tmp"
 }
 
+# The same pinned installer is used by first-start setup and native-binary CI.
+source "$(dirname "${BASH_SOURCE[0]}")/install-unreal.sh"
+
 # omp (Oh My Pi, MIT) ships standalone prebuilt binaries on GitHub releases, with a SHA256SUMS.txt
 # beside them. Pinned EXACTLY, like every other backend here: upstream releases almost daily
 # (18.1.8 through 18.1.13 in five days), and 18.1.13 is the release the runner's omp code was
@@ -542,6 +546,10 @@ try_install() {
 }
 
 install_backends() {
+  if wanted unreal && { [ ! -x "$(backend_bin unreal)" ] || [ "$(cat "$TOOLS/unreal/version" 2>/dev/null || true)" != "$UNREAL_PIN" ]; }; then
+    echo "[harnessrouter] installing Unreal Agent $UNREAL_PIN (MIT)…"
+    try_install "Unreal Agent" install_unreal || true
+  fi
   mkdir -p "$TOOLS"
 
   # -g is what creates $TOOLS/bin/<cmd>; --prefix alone just drops a node_modules tree with no

@@ -49,6 +49,7 @@ import datetime
 import json
 import mimetypes
 import os
+import sys
 import pathlib
 import re
 import shlex
@@ -364,7 +365,7 @@ def _isolate_session(ws: str) -> None:
 _CALLER_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # Prefixes the runner sets for the agent's own credentials, and the dynamic loader's; names that
 # would redirect an interpreter's imports, a process's trust roots or its network path.
-_CALLER_ENV_RESERVED = ("HR_", "HARNESS_", "OPENAI_", "ANTHROPIC_", "GEMINI_", "GOOGLE_", "AWS_", "AZURE_", "LD_", "DYLD_")
+_CALLER_ENV_RESERVED = ("HR_", "HARNESS_", "OPENAI_", "ANTHROPIC_", "GEMINI_", "GOOGLE_", "AWS_", "AZURE_", "UNREAL_", "LD_", "DYLD_")
 _CALLER_ENV_RESERVED_NAMES = {"PATH", "HOME", "USER", "SHELL", "TERM", "LANG", "PWD", "TMPDIR",
                               "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "NODE_OPTIONS", "NODE_EXTRA_CA_CERTS",
                               "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
@@ -617,7 +618,7 @@ def _git_ensure(ws: str) -> None:
         ".harness/home/.pi/agent/auth.json", ".harness/home/.pi/agent/models.json",
         ".harness/goose/config/secrets.yaml",
         "# harness: the CLI home is checkpointed by tar, not by this repo (see _git_ensure)",
-        ".harness/home/",
+        ".harness/home/", ".harness/unreal/",
         "",
     ]))
     if not (p / ".git").exists():
@@ -1274,7 +1275,7 @@ def _agent_doc_path(cwd: str, backend: str) -> pathlib.Path:
         # aider has no instruction-file convention of its own (no AGENTS.md discovery, no
         # CLAUDE.md): the file is written here and the driver puts it into aider's system message.
         "AGENTS.md" if backend in ("codex", "hermes", "pi", "dsh", "opencode", "cline", "omp",
-                                   "goose", "kimi", "aider", "openhands")
+                                   "goose", "kimi", "aider", "openhands", "unreal")
         else "CLAUDE.md")
 
 
@@ -3291,6 +3292,12 @@ def _usage_fields(u) -> dict:
         return {"input_tokens": max(n(u.get("prompt_tokens")) - cached, 0),
                 "output_tokens": n(u.get("completion_tokens")), "cache_read_tokens": cached}
     if "input_tokens" in u or "output_tokens" in u:
+        # Responses API input_tokens is gross, unlike Anthropic's fresh-only count.
+        details = u.get("input_tokens_details")
+        if isinstance(details, dict):
+            cached = n(details.get("cached_tokens"))
+            return {"input_tokens": max(n(u.get("input_tokens")) - cached, 0),
+                    "output_tokens": n(u.get("output_tokens")), "cache_read_tokens": cached}
         out = {}
         for src, dst in (("input_tokens", "input_tokens"), ("output_tokens", "output_tokens"),
                          ("cache_read_input_tokens", "cache_read_tokens"),
@@ -3312,6 +3319,7 @@ def _usage_in_doc(doc) -> dict:
     if not isinstance(doc, dict):
         return {}
     for u in (doc.get("usage"), doc.get("usageMetadata"),
+              (doc.get("response") or {}).get("usage") if isinstance(doc.get("response"), dict) else None,
               (doc.get("message") or {}).get("usage") if isinstance(doc.get("message"), dict) else None):
         got = _usage_fields(u)
         if got:
@@ -3436,6 +3444,21 @@ class _HermesRelayHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(data)
             return
         base, key, flags = route
+        # Unreal v0.1.1 has retry limits but no agent-step budget. Bound model requests
+        # here BEFORE forwarding; retries count toward this conservative upper bound.
+        if flags.get("unreal_request_limit") and self.command == "POST" and self.path.split("?", 1)[0] == "/v1/responses":
+            with _HERMES_RELAY["lock"]:
+                capped = flags["unreal_request_count"] >= flags["unreal_request_limit"]
+                if not capped:
+                    flags["unreal_request_count"] += 1
+            if capped:
+                data = b'{"error":{"code":"hr_unreal_request_limit","message":"hr_unreal_request_limit: model request budget exhausted"}}'
+                self.send_response(400)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
         tail = self.path.removeprefix("/v1") if self.path.startswith("/v1/") else self.path
         drop = {"host", "content-length", "authorization", "x-goog-api-key", "connection",
                 "accept-encoding", "transfer-encoding"}
@@ -5761,6 +5784,67 @@ def _systemone_relay_route(provider: str, base_url: str, api_key: str) -> tuple[
     return f"http://127.0.0.1:{_HERMES_RELAY['port']}/v1", tok
 
 
+
+def _unreal_to_claude(obj: dict, state: dict) -> list[dict]:
+    # The driver already speaks the canonical schema. Native structured errors are the
+    # authority; Claude's diagnostic-prose filter would misclassify legitimate Unreal text.
+    return [obj]
+
+
+UNREAL_DEFAULT_MODEL = os.environ.get("UNREAL_DEFAULT_MODEL", "gpt-5.4")
+UNREAL_PROVIDERS = {"openai", "openrouter"}
+UNREAL_DRIVER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "unreal_driver.py")
+
+
+def _build_unreal(provider: str, auth: Auth, model: str, prompt: str, cwd: str, env: dict,
+                  resume_session_id: str | None = None, mcp_servers: list[dict] | None = None,
+                  tools_disabled: list[str] | None = None, max_turns: int | None = None,
+                  idempotency_key: str = "") -> list[str]:
+    """The native runner owns execution; the driver only translates its persisted events."""
+    pr = provider or "openai"
+    if pr not in UNREAL_PROVIDERS:
+        raise HTTPException(400, f"unsupported Unreal provider '{pr}'")
+    if mcp_servers:
+        raise HTTPException(400, "Unreal Agent v0.1.1 does not support MCP servers")
+    disabled = list(tools_disabled or [])
+    unknown = set(disabled) - {"Bash", "ViewImage", "SkillUse"}
+    if unknown:
+        raise HTTPException(400, f"unknown Unreal tools: {', '.join(sorted(unknown))}")
+    if max_turns is not None and max_turns < 1:
+        raise HTTPException(400, "Unreal max_turns must be positive")
+    from unreal_driver import session_file
+    if resume_session_id:
+        try:
+            history = session_file(cwd, resume_session_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if not history.is_file():
+            raise HTTPException(409, "Unreal session history is missing; refusing to start a fresh conversation")
+    base = auth.base_url or ("https://openrouter.ai/api/v1" if pr == "openrouter" else "https://api.openai.com/v1")
+    if not auth.api_key:
+        raise HTTPException(400, "Unreal requires a provider API key")
+    relay_base, relay_tok = _hermes_relay_route(base, auth.api_key)
+    with _HERMES_RELAY["lock"]:
+        flags = _HERMES_RELAY["routes"][relay_tok][2]
+        flags["unreal_request_limit"] = max_turns or 400
+        flags["unreal_request_count"] = 0
+    # Set these even if the caller's workspace has a .env: native dotenv never overrides
+    # already-present variables, so the provider and credentials stay on the selected route.
+    env["UNREAL_HARNESS_LLM_PROVIDER"] = pr
+    env["UNREAL_HARNESS_LLM_BASE_URL"] = relay_base
+    env["UNREAL_HARNESS_LLM_API_KEY"] = relay_tok
+    env["UNREAL_HARNESS_LLM_MODEL"] = model
+    doc = _agent_doc_path(cwd, "unreal")
+    instructions = doc.read_text() if doc.is_file() else "Save all deliverables inside the task workspace."
+    msg_id = (str(uuid.uuid5(uuid.NAMESPACE_URL, f"harnessrouter:unreal:{idempotency_key}"))
+              if idempotency_key else str(uuid.uuid4()))
+    job = {"binary": os.environ.get("HR_UNREAL_BIN", "unreal-agent-runner"),
+           "cwd": cwd, "model": model, "prompt": prompt, "system_prompt": instructions,
+           "resume_session_id": resume_session_id, "message_id": msg_id,
+           "tools_disabled": disabled}
+    return [sys.executable, UNREAL_DRIVER, json.dumps(job)]
+
+
 def _build_systemone(provider: str, auth: Auth, model: str, prompt: str, cwd: str, env: dict,
                      resume_session_id: str | None = None, mcp_servers: list[dict] | None = None,
                      tools_disabled: list[str] | None = None, max_turns: int | None = None,
@@ -6097,6 +6181,8 @@ _openhands_to_claude.eof = _openhands_eof   # type: ignore[attr-defined]
 
 
 BACKENDS = {
+    "unreal": {"providers": sorted(UNREAL_PROVIDERS), "default_model": UNREAL_DEFAULT_MODEL,
+               "normalize": _unreal_to_claude},
     "claude": {"providers": sorted(CLAUDE_PROVIDERS), "default_model": CLAUDE_DEFAULT_MODEL,
                "normalize": _claude_passthrough},
     "codex": {"providers": sorted(CODEX_PROVIDERS), "default_model": CODEX_DEFAULT_MODEL,
@@ -7450,6 +7536,11 @@ def turn(req: TurnReq, identifier: str = "") -> dict:
                                resume_session_id=req.resume_session_id,
                                mcp_servers=req.mcp_servers,
                                tools_disabled=req.tools_disabled, max_turns=req.max_turns)
+    elif backend == "unreal":
+        cmd = _build_unreal(req.provider, auth, model, req.prompt, cwd, env,
+                            resume_session_id=req.resume_session_id, mcp_servers=req.mcp_servers,
+                            tools_disabled=req.tools_disabled, max_turns=req.max_turns,
+                            idempotency_key=req.idempotency_key or "")
     elif backend == "systemone":
         model = model or SYSTEMONE_DEFAULT_MODEL
         cmd = _build_systemone(req.provider, auth, model, req.prompt, cwd, env,

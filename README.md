@@ -146,6 +146,9 @@ This provider key authorizes model requests. It is separate from the HarnessRout
 
 Open **Agent harnesses**, choose a supported harness, and select **New task**. Pick an available model and give the agent a concrete task. Follow live progress and open the files it produces in the same session.
 
+[Unreal Agent setup and capabilities](docs/unreal-agent.md) covers the native Unreal backend,
+Responses connections, supported tools, and its current verification status.
+
 ![Hermes reviewing a fictional NDA and opening the redlined output](docs/images/harnessrouter-hermes-nda-redline-complete-run-readme.gif)
 
 <sub>In the illustrative run above, Hermes reviews a fictional NDA and produces a redlined version, a clean copy, and a negotiation memo.</sub>

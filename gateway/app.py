@@ -1095,6 +1095,8 @@ HR_HOSTED_CONNECT_URL = f"{HR_HOSTED_BASE}/v1/connect"
 # integration provider type × runner backend -> the runner-side provider that carries it.
 # Absent pair = that backend can't use the integration (mapping falls through to the chain).
 _INTEGRATION_WIRING: dict[tuple[str, str], str] = {
+    ("openai", "unreal"): "openai",
+    ("custom", "unreal"): "openai",
     ("azure-foundry", "codex"): "azure",       ("azure-foundry", "hermes"): "azure-foundry",
     ("bedrock", "claude"): "bedrock",          ("bedrock", "hermes"): "bedrock",
     ("openrouter", "codex"): "tokenrouter",    ("openrouter", "hermes"): "openrouter",
@@ -3020,7 +3022,7 @@ _HDR_REF = re.compile(r"\$headers\.([A-Za-z0-9_-]+)")
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # Names the runner sets for the agent process itself (its credentials, its paths); a harness may not
 # take them over. The runner also gives its own values precedence, so this is the message, not the wall.
-_ENV_RESERVED_PREFIX = ("HR_", "HARNESS_", "OPENAI_", "ANTHROPIC_", "GEMINI_", "GOOGLE_", "AWS_", "AZURE_", "LD_", "DYLD_")
+_ENV_RESERVED_PREFIX = ("HR_", "HARNESS_", "OPENAI_", "ANTHROPIC_", "GEMINI_", "GOOGLE_", "AWS_", "AZURE_", "UNREAL_", "LD_", "DYLD_")
 # The shell's own, the interpreters' import paths, the trust roots and the network path: a
 # harness gets its variables, not the runtime's.
 _ENV_RESERVED = {"PATH", "HOME", "USER", "SHELL", "TERM", "LANG", "PWD", "TMPDIR",
@@ -3108,6 +3110,7 @@ async def _harness_plugins(harness_id: str, org: str, hdr_vals: dict[str, str] |
         # and no document skills while custom ones did.
         return [], (_builtin_default_skills() if _base_takes_skills(harness_id) else []), [], [], []
     v = await _mcp_migrate(org, harness_id, v)
+    _validate_base_capabilities(str(v.get("base") or harness_id), _mcp_list(v), _plugins_of(v))
     takes_skills = _base_takes_skills(str(v.get("base") or harness_id))
 
     def _arr(prop):
@@ -4817,8 +4820,8 @@ _CUSTOM_FORMAT_BACKENDS = {
     "openai": {"hermes", "opencode", "pi", "dsh", "qwen", "cline", "omp", "goose", "kimi", "aider",
                "openhands"},
     "anthropic": {"claude", "opencode", "pi", "dsh", "omp"},
-    # The OpenAI Responses API: what codex speaks, and only codex among the agent CLIs here.
-    "responses": {"codex"},
+    # The OpenAI Responses API: native to Codex and Unreal Agent.
+    "responses": {"codex", "unreal"},
 }
 
 
@@ -6488,6 +6491,10 @@ RESPONSES_ONLY_MODELS = frozenset({"gpt-5.3-codex", "gpt-6-astra"})
 # sets), so a Responses-API-only id would be a picker row that fails on send.
 # aider and openhands speak chat/completions through litellm's openai provider (the id is sent
 # `openai/<id>`), so a Responses-API-only id would be a picker row that fails on send.
+# Unreal's initial catalog is deliberately narrow; live provider measurement is recorded
+# separately in docs/unreal-agent.md. Other ids require an explicit Responses integration.
+_MODEL_CATALOG["unreal"] = {"default": "gpt-5.4", "models": ["gpt-5.4"]}
+
 CHAT_ONLY_BACKENDS = ("qwen", "cline", "goose", "kimi", "aider", "openhands")
 _BARE_MODELS = {"", "claude", "codex", "anthropic", "bedrock", "openai", "hermes", "pi", "dsh", "deepseek", "omp"}
 # Models whose serving CHANNEL refuses image input outright. Measured, not assumed — probed
@@ -13614,6 +13621,13 @@ def _builtin_default_skills(seen: set[str] | None = None) -> list[dict]:
 #   hard        — the CLI enforces it (claude: --disallowedTools takes these exact names).
 #   instruction — no per-tool switch exists; the name is written into the agent doc as a request.
 _BASE_CATALOG: dict[str, dict] = {
+    "unreal": {
+        "label": "Unreal Agent", "backend": "unreal", "status": "ready",
+        "system_prompt": ("You are Unreal Agent, an asynchronous coding agent. Work in the task "
+                          "workspace, use skills when relevant, and save deliverables there."),
+        "tools": [("Bash", "Bash"), ("ViewImage", "View Image"), ("SkillUse", "Use Skill")],
+        "tool_enforcement": "hard", "mcp": False,
+    },
     "codex": {
         "label": "Codex", "backend": "codex", "status": "ready",
         "system_prompt": ("You are Codex, an autonomous software-engineering agent. You operate on "
@@ -13978,8 +13992,22 @@ async def _vg_list_by_org(label: str, org: str) -> list[dict]:
     return await BACKING.graph.find(label, {"org": org})
 
 
+def _validate_base_capabilities(base: str, servers: list | None, plugins: list | None,
+                                disabled: list | None = None) -> None:
+    if base != "unreal":
+        return
+    enabled_servers = [s for s in servers or [] if str(s.get("enabled")) not in ("False", "false", "0")]
+    plugin_servers = [s for p in plugins or [] if p.get("enabled", True) for s in p.get("mcpServers", [])]
+    if enabled_servers or plugin_servers:
+        raise uhp_error(422, "unsupported_capability", "Unreal Agent v0.1.1 does not support MCP servers.", "mcp_servers")
+    unknown = set(disabled or []) - {"Bash", "ViewImage", "SkillUse"}
+    if unknown:
+        raise uhp_error(422, "unsupported_tool", f"Unknown Unreal tools: {', '.join(sorted(unknown))}.", "disabled_tools")
+
+
 def _harness_props(body: HarnessBody) -> dict:
     base = _require_supported_base(body.base)   # refuse at create, not at the first task
+    _validate_base_capabilities(base, body.mcp_servers, body.plugins, body.disabled_tools)
     return {"name": body.name, "base": base, "base_label": body.base_label or base,
             "default_model": body.default_model or "", "system_prompt": body.system_prompt or "",
             "mcp_servers": json.dumps(body.mcp_servers or []), "skills": json.dumps(body.skills or []),
@@ -14503,6 +14531,7 @@ async def _plugins_prepare(body: HarnessBody, org: str, previous: list[dict] | N
         staged.append((entry, None if blob else encoded, blob))
     out = [e for e, _, _ in staged]
     _plugin_collisions(out, body.mcp_servers, body.skills, reserved_mcp)
+    _validate_base_capabilities(body.base, body.mcp_servers, out, body.disabled_tools)
     # Every check passed: store the fresh packages, then let go of the ones this write dropped.
     for entry, encoded, blob in staged:
         if encoded is not None:
@@ -15691,6 +15720,7 @@ async def list_bases(request: Request) -> dict:
                               if b.get("skills", True) else []),
             "builtinSkillsEnumerable": False,
             "takesSkills": bool(b.get("skills", True)),
+            "takesMcp": bool(b.get("mcp", True)),
         })
     # The limits a turn gets when neither the request nor the harness sets one, so the console can
     # show the number that will apply rather than a placeholder of its own.

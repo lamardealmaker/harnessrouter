@@ -61,6 +61,12 @@ jobs:
       # The System One Harness is on the runner's venv in the image (docker/entrypoint.sh pins the tag);
       # the driver's tests import it, and skip without it, so the suite installs the same pin.
       - run: pip install -r runner/requirements.txt pytest pytest-asyncio httpx "systemone-harness @ git+https://github.com/HarnessRouter/SystemOneHarness@v0.4.0"
+      - name: Install checksum-verified Unreal Agent for native integration tests
+        run: |
+          source docker/install-unreal.sh
+          TOOLS="$RUNNER_TEMP/unreal-tools"
+          install_unreal
+          echo "HR_UNREAL_TEST_BIN=$TOOLS/bin/unreal-agent-runner" >> "$GITHUB_ENV"
       - run: python -m pytest runner/tests -q
 
   conformance:
