@@ -14,7 +14,7 @@ import { chromium } from 'playwright';
 import crypto from 'node:crypto';
 
 const BASE = process.env.BASE;
-const BASES = (process.env.BASES || 'codex,claude-code,hermes,pi,dsh,opencode,qwen,gemini,cline,omp,goose,kimi,aider,openhands').split(',');   // every built-in harness, all fourteen
+const BASES = (process.env.BASES || 'codex,claude-code,hermes,pi,dsh,opencode,qwen,gemini,cline,omp,goose,kimi,aider,openhands,unreal').split(',');   // coding harnesses
 const RESULTS = process.env.RESULTS || 'results-custom.json';
 // A harness's other kind of tool is an MCP server. A self-contained instance hosts only the
 // database and media servers, one needing a database and the other costing real money per call, so
@@ -109,6 +109,10 @@ try {
 
   for (const base of BASES) {
     const rec = { base, at: new Date().toISOString() };
+    const takesMcp = base !== 'unreal';
+    const disabledTool = base === 'unreal' ? 'ViewImage' : 'WebSearch';
+    const mcpUrl = takesMcp ? MCP_URL : 'off';
+    if (!takesMcp) rec.mcp_error = 'unsupported: Unreal Agent v0.1.1 has no MCP connector';
     let hid = null;
     try {
       // A harness a person would build: its own skill (with its own script), and one inherited
@@ -119,8 +123,8 @@ try {
           name: `matrix custom ${base}`, base,
           system_prompt: 'You follow your skills exactly.',
           skills: [SKILL('matrix-stamp')],
-          disabled_tools: ['WebSearch'],
-          mcp_servers: MCP_URL === 'off' ? [] : [{ name: MCP_NAME, url: MCP_URL, transport: 'http' }],
+          disabled_tools: [disabledTool],
+          mcp_servers: mcpUrl === 'off' ? [] : [{ name: MCP_NAME, url: MCP_URL, transport: 'http' }],
         }),
       });
       rec.created = created.status;
@@ -131,8 +135,8 @@ try {
       const back = await api(`/api/harness/v1/harnesses/${hid}`);
       const h = back.json || {};
       rec.skill_stored = ((h.skills || []).some((s) => (s.name || s.id) === 'matrix-stamp'));
-      rec.tool_disabled_stored = (h.disabledTools || h.disabled_tools || []).includes('WebSearch');
-      rec.mcp_stored = MCP_URL === 'off' ? null
+      rec.tool_disabled_stored = (h.disabledTools || h.disabled_tools || []).includes(disabledTool);
+      rec.mcp_stored = mcpUrl === 'off' ? null
         : (h.mcpServers || h.mcp_servers || []).some((m) => String(m.name || '') === MCP_NAME);
 
       const t0 = Date.now();
@@ -172,11 +176,11 @@ try {
       // the three claims, each read from the stored record
       rec.skill_reached = answer.includes(token);              // the bundle got to the agent
       rec.script_ran = files.some((f) => f.includes('stamp.txt'));  // its script actually executed
-      rec.disabled_tool_unused = !tools.some((t) => /websearch/i.test(t));
+      rec.disabled_tool_unused = !tools.some((t) => base === 'unreal' ? /viewimage/i.test(t) : /websearch/i.test(t));
       // The MCP half, in the same harness and the same session: a second turn that can only be
       // answered by calling the declared server. Judged on the CALL, not on what it returned: a
       // public server's prose is not ours to pin, but a tool call is a fact in the record.
-      if (MCP_URL !== 'off' && mcpUp && rec.skill_reached) {
+      if (mcpUrl !== 'off' && mcpUp && rec.skill_reached) {
         const m0 = Date.now();
         await api('/api/harness/v1/responses', {
           method: 'POST', headers: { 'content-type': 'application/json' },
@@ -197,11 +201,11 @@ try {
         rec.mcp_tools = mtools;
         rec.mcp_called = mtools.some((t) => MCP_TOOL.test(t));
         rec.mcp_error = String((mlast && (mlast.error || mlast.incomplete_reason)) || '').slice(0, 200);
-      } else if (MCP_URL !== 'off' && !mcpUp) {
+      } else if (mcpUrl !== 'off' && !mcpUp) {
         rec.mcp_called = null; rec.mcp_error = 'skipped: the public MCP server was unreachable';
       }
       // the MCP half only counts against a row when it actually ran
-      const mcpOk = MCP_URL === 'off' || rec.mcp_called === null || (rec.mcp_stored && rec.mcp_called);
+      const mcpOk = mcpUrl === 'off' || rec.mcp_called === null || (rec.mcp_stored && rec.mcp_called);
       rec.ok = !!(rec.skill_stored && rec.tool_disabled_stored && rec.skill_reached && rec.script_ran && rec.disabled_tool_unused && mcpOk);
       rec.why = rec.ok ? '' : [
         rec.skill_stored ? '' : 'the skill was not stored on the harness',
@@ -210,8 +214,8 @@ try {
         rec.script_ran ? '' : `the skill's script left no file (files: ${files.join(',') || 'none'})`,
         rec.disabled_tool_unused ? '' : `a disabled tool was called: ${tools.join(',')}`,
         rec.error ? `the turn ended: ${rec.error}` : '',
-        (MCP_URL !== 'off' && rec.mcp_called === false && !rec.mcp_stored) ? 'the MCP server was not stored on the harness' : '',
-        (MCP_URL !== 'off' && rec.mcp_called === false && rec.mcp_stored)
+        (mcpUrl !== 'off' && rec.mcp_called === false && !rec.mcp_stored) ? 'the MCP server was not stored on the harness' : '',
+        (mcpUrl !== 'off' && rec.mcp_called === false && rec.mcp_stored)
           ? `the declared MCP server was never called (tools: ${(rec.mcp_tools || []).join(',') || 'none'})${rec.mcp_error ? '; ' + rec.mcp_error : ''}` : '',
       ].filter(Boolean).join('; ');
       log(`CUSTOM ${base} ${rec.ok ? 'ok' : 'FAIL'} ${rec.s}s mcp=${rec.mcp_called === null ? 'skipped' : rec.mcp_called} ${rec.why}`);

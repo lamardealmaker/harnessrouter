@@ -203,6 +203,8 @@ export function HarnessSettings({ id, embedded = false, onNavigate }: {
   // Built-ins the harness has not replaced with one of its own. A built-in is implicit: the
   // harness stores an entry only when its answer differs from the image's default.
   const takesSkills = srvBase?.takesSkills !== false;
+  const isUnreal = (base?.id || draft?.base || '') === 'unreal';
+  const takesMcp = srvBase?.takesMcp !== false && !isUnreal;
   const baseSkills = (takesSkills ? (srvBase?.builtinSkills || []) : []).filter((b) => !ownSkills.some(({ s }) => s.name === b.name));
   const disabledTools = new Set(draft?.disabledTools || []);
 
@@ -282,7 +284,7 @@ export function HarnessSettings({ id, embedded = false, onNavigate }: {
           <section className="form-section">
             <div><h3>Agent instructions</h3><p>Persistent role, conventions, constraints, and output contract loaded on every Task.</p></div>
             <div className="field-stack">
-              <div className="field"><label htmlFor="hsInstructions">{(base?.id || draft?.base || '') === 'systemone' ? 'Instructions' : ['codex', 'hermes', 'omp', 'pi', 'opencode', 'dsh', 'qwen', 'cline', 'goose', 'kimi', 'aider', 'openhands'].includes(base?.id || draft?.base || '') ? 'AGENTS.md' : 'CLAUDE.md'}</label>
+              <div className="field"><label htmlFor="hsInstructions">{(base?.id || draft?.base || '') === 'systemone' ? 'Instructions' : ['codex', 'hermes', 'omp', 'pi', 'opencode', 'dsh', 'qwen', 'cline', 'goose', 'kimi', 'aider', 'openhands', 'unreal'].includes(base?.id || draft?.base || '') ? 'AGENTS.md' : 'CLAUDE.md'}</label>
                 <textarea id="hsInstructions" rows={7} disabled={readOnly}
                   value={oob ? oob.systemPrompt : (draft?.systemPrompt || '')}
                   onChange={(e) => upd({ systemPrompt: e.target.value })} />
@@ -291,10 +293,10 @@ export function HarnessSettings({ id, embedded = false, onNavigate }: {
           </section>
 
           <section className="form-section">
-            <div><h3>Tools</h3><p>Control inherited tools and add MCP servers for external capabilities.</p></div>
+            <div><h3>Tools</h3><p>{takesMcp ? 'Control inherited tools and add MCP servers for external capabilities.' : 'Control inherited tools. This version of Unreal Agent does not support MCP servers.'}</p></div>
             <div className="field-stack">
               <div className="section-actions"><strong>{baseTools.length + (draft?.mcpServers?.length || 0)} configured tools</strong>
-                {!readOnly && <button className="button small" type="button" onClick={() => setMcpModal({ idx: null })}><iconify-icon icon="tabler:plus"></iconify-icon>Add MCP</button>}</div>
+                {!readOnly && takesMcp && <button className="button small" type="button" onClick={() => setMcpModal({ idx: null })}><iconify-icon icon="tabler:plus"></iconify-icon>Add MCP</button>}</div>
               <div className="capability-list">
                 {baseTools.map((t) => (
                   <div key={t.name} className="capability-row">
@@ -483,11 +485,11 @@ export function HarnessSettings({ id, embedded = false, onNavigate }: {
             <div><h3>Runtime limits</h3><p>Stop Tasks that run longer or take more agent steps than expected.</p></div>
             <div className="field-stack">
               <div className="two-column-fields">
-                <div className="field"><label htmlFor="hsSteps">Max steps</label>
+                <div className="field"><label htmlFor="hsSteps">{isUnreal ? 'Max model requests' : 'Max steps'}</label>
                   <input id="hsSteps" type="number" min={1} disabled={readOnly}
                     value={draft?.maxStep ?? limits?.maxStep ?? ''}
                     onChange={(e) => upd({ maxStep: e.target.value ? Math.max(1, Number(e.target.value)) : null })} />
-                  <span className="field-help">Maximum agent steps before the Task stops.{limits ? ` Empty means the default, ${limits.maxStep}.` : ''}</span></div>
+                  <span className="field-help">{isUnreal ? 'Maximum model requests, including retries, before the Task stops.' : 'Maximum agent steps before the Task stops.'}{limits ? ` Empty means the default, ${limits.maxStep}.` : ''}</span></div>
                 <div className="field"><label htmlFor="hsTimeout">Timeout (minutes)</label>
                   <input id="hsTimeout" type="number" min={1} disabled={readOnly}
                     value={draft?.timeoutSeconds ? Math.round(draft.timeoutSeconds / 60) : (limits ? Math.round(limits.timeoutSeconds / 60) : '')}
